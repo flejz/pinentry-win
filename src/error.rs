@@ -18,6 +18,7 @@ pub struct AssuanError {
     pub message: String,
 }
 
+#[allow(dead_code)]
 impl AssuanError {
     pub fn new(code: u32, message: impl Into<String>) -> Self {
         AssuanError {
