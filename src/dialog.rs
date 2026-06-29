@@ -138,18 +138,6 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
 
-        WM_KEYDOWN => {
-            // Ctrl+Backspace clears the PIN field entirely
-            let vk = wparam.0 as u16;
-            if vk == 0x08 /* VK_BACK */ && (GetKeyState(0x11 /* VK_CONTROL */) as i16) < 0 {
-                if let Ok(hedit) = GetDlgItem(Some(hwnd), EDIT_PIN) {
-                    let empty: Vec<u16> = vec![0u16];
-                    let _ = SetWindowTextW(hedit, PCWSTR(empty.as_ptr()));
-                }
-            }
-            DefWindowProcW(hwnd, msg, wparam, lparam)
-        }
-
         WM_CLOSE => {
             TLS.with(|c| c.borrow_mut().canceled = true);
             let _ = DestroyWindow(hwnd);
@@ -496,6 +484,18 @@ fn run_dialog(title: &str) -> anyhow::Result<()> {
             let r = GetMessageW(&mut msg, None, 0, 0);
             if r.0 == 0 || r.0 == -1 {
                 break;
+            }
+            // Ctrl+Backspace: intercept before dispatch — WM_KEYDOWN goes to the
+            // focused EDIT child, not the parent WndProc, so we must catch it here.
+            if msg.message == WM_KEYDOWN
+                && msg.wParam.0 as u16 == 0x08 // VK_BACK
+                && (GetKeyState(0x11 /* VK_CONTROL */) as i16) < 0
+            {
+                if let Ok(hedit) = GetDlgItem(Some(hwnd), EDIT_PIN) {
+                    let empty = [0u16];
+                    let _ = SetWindowTextW(hedit, PCWSTR(empty.as_ptr()));
+                }
+                continue; // consume — don't let EDIT handle the backspace too
             }
             if IsDialogMessageW(hwnd, &mut msg).as_bool() {
                 continue;
