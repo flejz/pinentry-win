@@ -1,4 +1,4 @@
-# pinentry-windows
+# pinentry-win
 
 Fast, modern Windows-native pinentry for GnuPG — written in Rust.
 

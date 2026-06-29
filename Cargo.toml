@@ -1,5 +1,5 @@
 [package]
-name = "pinentry-windows"
+name = "pinentry-win"
 version = "0.1.0"
 edition = "2021"
 description = "GnuPG pinentry for Windows using native Win32 dialogs"
