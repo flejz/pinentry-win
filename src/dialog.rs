@@ -10,6 +10,7 @@ use windows::core::{w, PCWSTR};
 use windows::Win32::Foundation::*;
 use windows::Win32::Graphics::Gdi::*;
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
+use windows::Win32::UI::HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI};
 use windows::Win32::UI::Input::KeyboardAndMouse::GetKeyState;
 use windows::Win32::UI::WindowsAndMessaging::*;
 use zeroize::Zeroizing;
@@ -65,6 +66,8 @@ struct Tls {
     pin: Zeroizing<Vec<u16>>,
     confirmed: bool,
     canceled: bool,
+    // per-monitor DPI (dots per inch); default 96 = 100% scaling
+    dpi: u32,
 }
 
 impl Default for Tls {
@@ -84,6 +87,7 @@ impl Default for Tls {
             pin: Zeroizing::new(vec![]),
             confirmed: false,
             canceled: false,
+            dpi: 96,
         }
     }
 }
@@ -106,6 +110,11 @@ fn w_btn(s: &str) -> Vec<u16> {
 
 fn wlen(buf: &[u16]) -> usize {
     buf.iter().position(|&c| c == 0).unwrap_or(buf.len())
+}
+
+/// Scale a baseline-96-DPI pixel value to the actual monitor DPI.
+fn scale(px: i32, dpi: u32) -> i32 {
+    (px as i64 * dpi as i64 / 96i64) as i32
 }
 
 // ── WndProc ────────────────────────────────────────────────────────────────────
@@ -148,6 +157,36 @@ unsafe extern "system" fn wnd_proc(
                     if let Ok(hedit) = GetDlgItem(Some(hwnd), EDIT_PIN) {
                         let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hedit));
                     }
+                }
+            }
+            LRESULT(0)
+        }
+
+        WM_DPICHANGED => {
+            let new_dpi = (wparam.0 & 0xFFFF) as u32;
+            // lParam = suggested RECT from Windows — use it directly
+            let rect = &*(lparam.0 as *const RECT);
+            let _ = SetWindowPos(
+                hwnd, None,
+                rect.left, rect.top,
+                rect.right - rect.left, rect.bottom - rect.top,
+                SWP_NOZORDER | SWP_NOACTIVATE,
+            );
+            // Update DPI and rebuild all children at new scale
+            TLS.with(|c| c.borrow_mut().dpi = new_dpi);
+            // Destroy existing children
+            for &id in &[STATIC_DESC, STATIC_ERROR, STATIC_PROMPT,
+                         EDIT_PIN, BTN_OK, BTN_CANCEL, BTN_NOTOK] {
+                if let Ok(h) = GetDlgItem(Some(hwnd), id) {
+                    let _ = DestroyWindow(h);
+                }
+            }
+            // Recreate at new DPI (on_create reads from TLS.dpi)
+            on_create(hwnd);
+            // Restore focus to EDIT
+            if TLS.with(|c| c.borrow().mode == Mode::GetPin) {
+                if let Ok(h) = GetDlgItem(Some(hwnd), EDIT_PIN) {
+                    let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(h));
                 }
             }
             LRESULT(0)
@@ -203,17 +242,18 @@ unsafe fn on_create(hwnd: HWND) {
     // Segoe UI 9pt (the Windows message font) — DEFAULT_GUI_FONT is Segoe UI on Win10/11
     let font = GetStockObject(DEFAULT_GUI_FONT);
 
-    const PAD: i32 = 16;
-    const CLIENT_W: i32 = 440;
-    const CTRL_W: i32 = CLIENT_W - PAD * 2;
-
-    let mut y = PAD;
-
     // Apply font to the parent too (affects WM_CTLCOLORSTATIC background brush)
     send_font(hwnd, font);
 
     TLS.with(|cell| {
         let tls = cell.borrow();
+        let d = tls.dpi;
+
+        let pad    = scale(16,  d);
+        let cw     = scale(440, d);
+        let ctrl_w = cw - pad * 2;
+
+        let mut y = pad;
 
         // ── Description ──────────────────────────────────────────────────
         if tls.has_desc {
@@ -222,13 +262,13 @@ unsafe fn on_create(hwnd: HWND) {
                 w!("STATIC"),
                 PCWSTR(tls.desc.as_ptr()),
                 WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_LEFT_ALIGN | SS_NOPREFIX_BIT),
-                PAD, y, CTRL_W, 68,
+                pad, y, ctrl_w, scale(68, d),
                 Some(hwnd),
                 Some(HMENU(STATIC_DESC as isize as *mut _)),
                 Some(hinstance),
                 None,
             ) { send_font(h, font); }
-            y += 76;
+            y += scale(76, d);
         }
 
         // ── Error (red text via WM_CTLCOLORSTATIC) ───────────────────────
@@ -238,23 +278,27 @@ unsafe fn on_create(hwnd: HWND) {
                 w!("STATIC"),
                 PCWSTR(tls.error.as_ptr()),
                 WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_LEFT_ALIGN | SS_NOPREFIX_BIT),
-                PAD, y, CTRL_W, 20,
+                pad, y, ctrl_w, scale(20, d),
                 Some(hwnd),
                 Some(HMENU(STATIC_ERROR as isize as *mut _)),
                 Some(hinstance),
                 None,
             ) { send_font(h, font); }
-            y += 28;
+            y += scale(28, d);
         }
 
         // ── Prompt label + password EDIT ─────────────────────────────────
         if tls.mode == Mode::GetPin {
+            let label_w   = scale(100, d);
+            let x_offset  = scale(108, d);
+            let edit_h    = scale(26,  d);
+
             if let Ok(h) = CreateWindowExW(
                 WINDOW_EX_STYLE(0),
                 w!("STATIC"),
                 PCWSTR(tls.prompt.as_ptr()),
                 WS_CHILD | WS_VISIBLE | WINDOW_STYLE(SS_RIGHT_ALIGN | SS_NOPREFIX_BIT),
-                PAD, y + 4, 100, 20,
+                pad, y + scale(4, d), label_w, scale(20, d),
                 Some(hwnd),
                 Some(HMENU(STATIC_PROMPT as isize as *mut _)),
                 Some(hinstance),
@@ -267,7 +311,7 @@ unsafe fn on_create(hwnd: HWND) {
                 None,
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP
                     | WINDOW_STYLE(ES_PASSWORD_BIT | ES_AUTOHSCROLL_BIT),
-                PAD + 108, y, CTRL_W - 108, 26,
+                pad + x_offset, y, ctrl_w - x_offset, edit_h,
                 Some(hwnd),
                 Some(HMENU(EDIT_PIN as isize as *mut _)),
                 Some(hinstance),
@@ -276,15 +320,15 @@ unsafe fn on_create(hwnd: HWND) {
                 send_font(hedit, font);
                 SendMessageW(hedit, EM_LIMITTEXT_MSG, Some(WPARAM(2048)), Some(LPARAM(0)));
             }
-            y += 42;
+            y += scale(42, d);
         }
 
         // ── Buttons (right-aligned) ───────────────────────────────────────
-        const BTN_H: i32 = 28;
-        const BTN_W: i32 = 92;
-        const BTN_GAP: i32 = 8;
-        let btn_y = y + 12;
-        let mut btn_x = CLIENT_W - PAD - BTN_W;
+        let btn_h   = scale(28, d);
+        let btn_w   = scale(92, d);
+        let btn_gap = scale(8,  d);
+        let btn_y   = y + scale(12, d);
+        let mut btn_x = cw - pad - btn_w;
 
         // OK — always present, default push button
         if let Ok(h) = CreateWindowExW(
@@ -292,13 +336,13 @@ unsafe fn on_create(hwnd: HWND) {
             w!("BUTTON"),
             PCWSTR(tls.ok_label.as_ptr()),
             WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_DEFPUSHBUTTON_STYLE),
-            btn_x, btn_y, BTN_W, BTN_H,
+            btn_x, btn_y, btn_w, btn_h,
             Some(hwnd),
             Some(HMENU(BTN_OK as isize as *mut _)),
             Some(hinstance),
             None,
         ) { send_font(h, font); }
-        btn_x -= BTN_W + BTN_GAP;
+        btn_x -= btn_w + btn_gap;
 
         if !tls.one_button && tls.mode != Mode::Message {
             // Cancel
@@ -307,13 +351,13 @@ unsafe fn on_create(hwnd: HWND) {
                 w!("BUTTON"),
                 PCWSTR(tls.cancel_label.as_ptr()),
                 WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON_STYLE),
-                btn_x, btn_y, BTN_W, BTN_H,
+                btn_x, btn_y, btn_w, btn_h,
                 Some(hwnd),
                 Some(HMENU(BTN_CANCEL as isize as *mut _)),
                 Some(hinstance),
                 None,
             ) { send_font(h, font); }
-            btn_x -= BTN_W + BTN_GAP;
+            btn_x -= btn_w + btn_gap;
 
             // "No" — only present when SETNOTOK was sent
             if tls.has_notok {
@@ -322,7 +366,7 @@ unsafe fn on_create(hwnd: HWND) {
                     w!("BUTTON"),
                     PCWSTR(tls.notok_label.as_ptr()),
                     WS_CHILD | WS_VISIBLE | WS_TABSTOP | WINDOW_STYLE(BS_PUSHBUTTON_STYLE),
-                    btn_x, btn_y, BTN_W, BTN_H,
+                    btn_x, btn_y, btn_w, btn_h,
                     Some(hwnd),
                     Some(HMENU(BTN_NOTOK as isize as *mut _)),
                     Some(hinstance),
@@ -355,17 +399,22 @@ unsafe fn on_ok(hwnd: HWND) {
     });
 }
 
-// ── Dynamic client height ──────────────────────────────────────────────────────
+// ── Dynamic client dimensions ──────────────────────────────────────────────────
 
 fn client_height() -> i32 {
     TLS.with(|cell| {
         let t = cell.borrow();
-        let mut h = 16; // top pad (matches PAD)
-        if t.has_desc  { h += 76; }
-        if t.has_error { h += 28; }
-        if t.mode == Mode::GetPin { h += 42; }
-        h + 12 + 28 + 16 // btn gap + btn height + bottom pad
+        let d = t.dpi;
+        let mut h = scale(16, d); // top pad
+        if t.has_desc  { h += scale(76, d); }
+        if t.has_error { h += scale(28, d); }
+        if t.mode == Mode::GetPin { h += scale(42, d); }
+        h + scale(12, d) + scale(28, d) + scale(16, d) // btn gap + btn h + bottom pad
     })
+}
+
+fn client_width() -> i32 {
+    TLS.with(|c| scale(440, c.borrow().dpi))
 }
 
 // ── Public entry points ────────────────────────────────────────────────────────
@@ -453,17 +502,38 @@ fn run_dialog(title: &str) -> anyhow::Result<()> {
         };
         RegisterClassExW(&wc);
 
-        // Compute exact total window size from desired client area.
-        const CLIENT_W: i32 = 440;
+        // Compute a preliminary centered position at 96 DPI to find which monitor
+        // the window will land on, then detect that monitor's actual DPI.
         let style    = WS_OVERLAPPED | WS_CAPTION | WS_SYSMENU | WS_CLIPCHILDREN;
         let ex_style = WS_EX_DLGMODALFRAME | WS_EX_TOPMOST;
-        let mut rect = RECT { left: 0, top: 0, right: CLIENT_W, bottom: client_height() };
+
+        // Preliminary size at default DPI to compute center point.
+        let mut pre_rect = RECT { left: 0, top: 0, right: 440, bottom: client_height() };
+        let _ = AdjustWindowRectEx(&mut pre_rect, style, false, ex_style);
+        let pre_w = pre_rect.right  - pre_rect.left;
+        let pre_h = pre_rect.bottom - pre_rect.top;
+        let cx = GetSystemMetrics(SM_CXSCREEN);
+        let cy = GetSystemMetrics(SM_CYSCREEN);
+        let pre_x = (cx - pre_w) / 2;
+        let pre_y = (cy - pre_h) / 2;
+
+        // Detect DPI of the monitor that contains the preliminary center point.
+        let dpi = {
+            let pt = POINT { x: pre_x + pre_w / 2, y: pre_y + pre_h / 2 };
+            let hmon = MonitorFromPoint(pt, MONITOR_DEFAULTTOPRIMARY);
+            let mut dpix = 0u32;
+            let mut dpiy = 0u32;
+            let _ = GetDpiForMonitor(hmon, MDT_EFFECTIVE_DPI, &mut dpix, &mut dpiy);
+            if dpix == 0 { 96 } else { dpix }
+        };
+        TLS.with(|c| c.borrow_mut().dpi = dpi);
+
+        // Recompute exact total window size now that we know the real DPI.
+        let mut rect = RECT { left: 0, top: 0, right: client_width(), bottom: client_height() };
         let _ = AdjustWindowRectEx(&mut rect, style, false, ex_style);
         let total_w = rect.right  - rect.left;
         let total_h = rect.bottom - rect.top;
 
-        let cx = GetSystemMetrics(SM_CXSCREEN);
-        let cy = GetSystemMetrics(SM_CYSCREEN);
         let x = (cx - total_w) / 2;
         let y = (cy - total_h) / 2;
 
