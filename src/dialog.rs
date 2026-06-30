@@ -138,6 +138,21 @@ unsafe extern "system" fn wnd_proc(
             LRESULT(0)
         }
 
+        WM_ACTIVATE => {
+            // Re-focus EDIT whenever window is activated (click-away and back).
+            // WA_INACTIVE = 0; any non-zero value means becoming active.
+            let is_active = (wparam.0 & 0xFFFF) != 0;
+            if is_active {
+                let is_pin = TLS.with(|c| c.borrow().mode == Mode::GetPin);
+                if is_pin {
+                    if let Ok(hedit) = GetDlgItem(Some(hwnd), EDIT_PIN) {
+                        let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(hedit));
+                    }
+                }
+            }
+            LRESULT(0)
+        }
+
         WM_CLOSE => {
             TLS.with(|c| c.borrow_mut().canceled = true);
             let _ = DestroyWindow(hwnd);
