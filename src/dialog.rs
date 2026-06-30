@@ -68,6 +68,8 @@ struct Tls {
     canceled: bool,
     // per-monitor DPI (dots per inch); default 96 = 100% scaling
     dpi: u32,
+    // DPI-scaled GDI font; null = not yet created
+    hfont: HFONT,
 }
 
 impl Default for Tls {
@@ -88,6 +90,7 @@ impl Default for Tls {
             confirmed: false,
             canceled: false,
             dpi: 96,
+            hfont: HFONT(std::ptr::null_mut()),
         }
     }
 }
@@ -115,6 +118,21 @@ fn wlen(buf: &[u16]) -> usize {
 /// Scale a baseline-96-DPI pixel value to the actual monitor DPI.
 fn scale(px: i32, dpi: u32) -> i32 {
     (px as i64 * dpi as i64 / 96i64) as i32
+}
+
+/// Create Segoe UI at the correct point size for `dpi`.
+/// Height formula: -(pt * dpi / 72)  [negative = character height, not cell height]
+unsafe fn create_dpi_font(dpi: u32) -> HFONT {
+    let mut lf = LOGFONTW::default();
+    lf.lfHeight  = -((9i32 * dpi as i32 + 36) / 72); // 9 pt, rounded
+    lf.lfWeight  = 400;  // FW_NORMAL
+    lf.lfCharSet = windows::Win32::Graphics::Gdi::FONT_CHARSET(1u8); // DEFAULT_CHARSET
+    lf.lfQuality = windows::Win32::Graphics::Gdi::FONT_QUALITY(5u8); // CLEARTYPE_QUALITY
+    let face = "Segoe UI\0";
+    for (i, c) in face.encode_utf16().enumerate().take(lf.lfFaceName.len()) {
+        lf.lfFaceName[i] = c;
+    }
+    CreateFontIndirectW(&lf) // returns HFONT directly; null on failure
 }
 
 // ── WndProc ────────────────────────────────────────────────────────────────────
@@ -172,6 +190,9 @@ unsafe extern "system" fn wnd_proc(
                 rect.right - rect.left, rect.bottom - rect.top,
                 SWP_NOZORDER | SWP_NOACTIVATE,
             );
+            // Delete old font before recreating
+            let old_font = TLS.with(|c| c.borrow().hfont);
+            if !old_font.0.is_null() { let _ = DeleteObject(old_font.into()); }
             // Update DPI and rebuild all children at new scale
             TLS.with(|c| c.borrow_mut().dpi = new_dpi);
             // Destroy existing children
@@ -199,6 +220,8 @@ unsafe extern "system" fn wnd_proc(
         }
 
         WM_DESTROY => {
+            let hf = TLS.with(|c| c.borrow().hfont);
+            if !hf.0.is_null() { let _ = DeleteObject(hf.into()); }
             PostQuitMessage(0);
             LRESULT(0)
         }
@@ -227,9 +250,9 @@ unsafe extern "system" fn wnd_proc(
     }
 }
 
-// ── Send system font to a control ─────────────────────────────────────────────
+// ── Send DPI-scaled font to a control ─────────────────────────────────────────
 
-unsafe fn send_font(ctrl: HWND, font: HGDIOBJ) {
+unsafe fn send_font(ctrl: HWND, font: HFONT) {
     SendMessageW(ctrl, WM_SETFONT_MSG, Some(WPARAM(font.0 as usize)), Some(LPARAM(1)));
 }
 
@@ -239,8 +262,10 @@ unsafe fn on_create(hwnd: HWND) {
     let hmod = GetModuleHandleW(None).unwrap_or_default();
     let hinstance: HINSTANCE = hmod.into();
 
-    // Segoe UI 9pt (the Windows message font) — DEFAULT_GUI_FONT is Segoe UI on Win10/11
-    let font = GetStockObject(DEFAULT_GUI_FONT);
+    // Create Segoe UI at correct size for current DPI; store for cleanup.
+    let d = TLS.with(|c| c.borrow().dpi);
+    let font = create_dpi_font(d);
+    TLS.with(|c| c.borrow_mut().hfont = font);
 
     // Apply font to the parent too (affects WM_CTLCOLORSTATIC background brush)
     send_font(hwnd, font);
