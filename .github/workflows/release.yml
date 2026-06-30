@@ -1,0 +1,44 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    name: Build Windows release
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: x86_64-pc-windows-msvc
+
+      - name: Build release binary
+        run: cargo build --release --target x86_64-pc-windows-msvc
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "pinentry-win ${{ github.ref_name }}"
+          body: |
+            Windows-native pinentry for GnuPG, built with windows-rs.
+
+            ## Install
+            Download `pinentry.exe` and copy to your GnuPG bin directory:
+            ```
+            copy pinentry.exe "C:\Program Files (x86)\GnuPG\bin\pinentry.exe"
+            gpgconf --kill gpg-agent
+            ```
+            Then add to `%APPDATA%\gnupg\gpg-agent.conf`:
+            ```
+            pinentry-program C:/Program Files (x86)/GnuPG/bin/pinentry.exe
+            ```
+          files: target/x86_64-pc-windows-msvc/release/pinentry.exe
+          draft: false
+          prerelease: false

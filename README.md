@@ -1,9 +1,15 @@
 # pinentry-win
 
+[![Release](https://img.shields.io/github/v/release/flejz/pinentry-win)](https://github.com/flejz/pinentry-win/releases/latest)
+
 Fast, modern Windows-native pinentry for GnuPG — written in Rust.
 
 A drop-in replacement for GNU pinentry on Windows, using the native Win32 API via [windows-rs](https://github.com/microsoft/windows-rs).
 No cygwin, no Qt, no GTK — just a clean Win32 dialog that starts instantly.
+
+## Download
+
+Grab the latest `pinentry.exe` from [Releases](https://github.com/flejz/pinentry-win/releases) — no build required.
 
 ## Features
 
@@ -16,11 +22,13 @@ No cygwin, no Qt, no GTK — just a clean Win32 dialog that starts instantly.
 
 ## Installation
 
-### From source
+### Download (recommended)
+Download `pinentry.exe` from the [latest release](https://github.com/flejz/pinentry-win/releases/latest).
 
+### Build from source
 ```
-cargo build --release
-copy target\release\pinentry.exe "C:\Program Files (x86)\GnuPG\bin\pinentry.exe"
+cargo build --release --target x86_64-pc-windows-msvc
+copy target\x86_64-pc-windows-msvc\release\pinentry.exe "C:\Program Files (x86)\GnuPG\bin\pinentry.exe"
 ```
 
 ### Configure GnuPG
